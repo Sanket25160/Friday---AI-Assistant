@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# VS Code
+.vscode/
+
+# Secrets
+.env
+config.py
+
+# Personal data
+memory.json
+
+# Test files
+test_browser_agent.py
+file.txt
