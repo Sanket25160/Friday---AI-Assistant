@@ -1,5 +1,7 @@
 import time
 import threading
+import sys
+sys.stdout.reconfigure(encoding="utf-8")
 from speech.listener import get_model, get_vad
 print("Loading speech recognition...")
 get_model()
@@ -15,8 +17,9 @@ print("Wakeword:", time.perf_counter() - start)
 
 from speech.listener import listen
 print("Listener:", time.perf_counter() - start)
+from speech.commands import is_sleep_command
 
-from speech.speaker import speak
+from speech.speaker import speak, speak_sync
 print("Speaker:", time.perf_counter() - start)
 
 from AI.agent import decide
@@ -54,10 +57,10 @@ import os
 import requests
 from groq import Groq
 import musicLibrary
-from speech.mic_monitor import start
 from AI.long_memory import remember
 from AI.agent import decide
 from AI.executor import execute
+from AI.agent_loop import run_agent
 
 
 from config import GROQ_API_KEY
@@ -91,23 +94,24 @@ def processCommand(c):
         if link:
             webbrowser.open(link)
         else:
-            asyncio.run(speak("Sorry, I couldn't find that song."))
+            speak_sync("Sorry, I couldn't find that song.")
     elif "news" in c.lower():
         r = requests.get(f"https://newsapi.org/v2/top-headlines?country=us&apiKey={NEWS_API_KEY}")
         data = r.json()
         articles = data["articles"]
         for article in articles[:5]:
             headline = article["title"]
-            asyncio.run(speak(headline))
-    
+            speak_sync(headline)
+
 if __name__ == "__main__":
-    start() # Start the microphone monitoring in a separate thread
-    asyncio.run(speak("Initializing Jarvis..."))
+    speak_sync("Initializing Friday...")
+    wakeword_cooldown = 0.0
     while True:
         try:
-                    wait_for_wakeword()
+                    wait_for_wakeword(cooldown=wakeword_cooldown)
+                    wakeword_cooldown = 0.0
 
-                    asyncio.run(speak("Yes boss, how may I help you?"))                 
+                    speak_sync("Yes boss, how may I help you?")
 
                     #Initialize timer as soon as the wake word is detected
                     last_command_time = time.time()
@@ -116,46 +120,67 @@ if __name__ == "__main__":
                     
                         command = listen()
 
-                        if not command:
+                        # Extract text if listen() returns a dictionary
+                        command_language = "en"
+                        if isinstance(command, dict):
+                            command_language = command.get("language", "en")
+                            command = command.get("text", "")
+
+                        # Ignore empty / meaningless Whisper results
+                        if not command or not command.strip():
+                            print("No valid command detected.")
+
                             if time.time() - last_command_time > 8:
-                                asyncio.run(speak("Going back to sleep."))
+                                speak_sync("Going back to sleep.")
                                 break
+
                             continue
+
+                        command = command.strip()
 
                         last_command_time = time.time()
 
                         print("Command:", command)
 
+                        if is_sleep_command(command):
+                            speak_sync("Going to sleep. Say Friday when you need me.")
+                            wakeword_cooldown = 1.5
+                            break
+
                         intent = classify(command)
 
                         print("Intent:", intent)
 
+                        # command = result["text"]
+                        # language = result["language"]
+
+                        last_command_time = time.time()
+
+                        # print("Command:", command)
+                        # print("Detected language:", language)
+
+                        # intent = classify(command)
+
+                        # print("Intent:", intent)
+
                         if intent == "command":
-                            print(">>> USING DECIDE()")
-                            plan = decide(command)
-                            print(plan)
+                            print(">>> USING AGENT()")
 
-                            for action in plan["steps"]:
-                                execute(action)
-
-                            print("Execute finished")
+                            run_agent(command)
 
                         elif intent == "chat":
                             print(">>> USING CHAT()")
                             response = chat(command)
 
                             print("Response:", response)
-                            asyncio.run(speak(response))
+                            speak_sync(response, language="hi" if command_language == "hi" else "auto")
 
                         else:
 
                             print(f"Unknown intent: {intent}")
 
-                            asyncio.run(
-                                speak("Sorry boss, I couldn't understand what you wanted.")
-                            )
+                            speak_sync("Sorry boss, I couldn't understand what you wanted.")
 
         except Exception:
             import traceback
             traceback.print_exc()
-

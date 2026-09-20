@@ -4,10 +4,9 @@ from silero_vad import load_silero_vad, VADIterator
 from faster_whisper import WhisperModel
 import numpy as np
 import sounddevice as sd
-import wave
-import os
 import torch
 import threading
+import time
 model = None
 model_lock = threading.Lock()
 
@@ -48,10 +47,10 @@ def get_vad():
 
 #Converting audio to text using Faster-Whisper
 
-def listen():
-    return listen_vad()
+def listen(audio_callback=None, stop_event=None):
+    return listen_vad(audio_callback=audio_callback, stop_event=stop_event)
 
-def listen_vad():
+def listen_vad(audio_callback=None, stop_event=None):
 
     model = get_model()
     vad = get_vad()
@@ -80,6 +79,12 @@ def listen_vad():
 
             audio, overflowed = stream.read(blocksize)
 
+            if audio_callback is not None:
+                audio_callback(audio)
+
+            if stop_event is not None and stop_event.is_set():
+                return {"text": "", "wake_event": True}
+
             pre_buffer.append(audio.copy())
             
             audio_tensor = torch.from_numpy(audio.flatten())
@@ -101,42 +106,41 @@ def listen_vad():
                 print("Recording finished")
                 break
 
-        if len(frames) == 0:
-            return ""
+    if len(frames) == 0:
+        return ""
 
-        audio_data = np.concatenate(frames, axis=0)
+    # The microphone can close before decoding. Whisper accepts the 16 kHz
+    # mono waveform directly, so there is no need for a temporary WAV file.
+    audio_data = np.ascontiguousarray(
+        np.concatenate(frames, axis=0).reshape(-1), dtype=np.float32
+    )
 
-        print(f"Frames recorded: {len(frames)}")
+    duration = len(audio_data) / samplerate
 
-        audio_int16 = (audio_data * 32767).astype(np.int16)
+    print(f"Recording duration: {duration:.2f} seconds")
 
-        filename = "temp.wav"
+    if duration < 1.0:
+        print("Recording too short. Ignoring.")
+        return ""
 
-        with wave.open(filename, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)      # 16-bit audio
-            wf.setframerate(samplerate)
-            wf.writeframes(audio_int16.tobytes())
+    print(f"Frames recorded: {len(frames)}")
 
-        import time
+    start_time = time.perf_counter()
+    segments, info = model.transcribe(audio_data)
 
-        start_time = time.time()
+    # Faster-Whisper decodes lazily while its segments are consumed.
+    text = "".join(segment.text for segment in segments).strip()
+    print("Whisper:", time.perf_counter() - start_time)
 
-        segments, info = model.transcribe(
-            filename,
-            language="en"
-        )
-        
-        print("Whisper:", time.time() - start_time)
+    detected_language = info.language
 
-        text = ""
+    print("Detected language:", detected_language)
+    print("Command:", text)
 
-        for segment in segments:
-            text += segment.text
-
-        os.remove(filename)
-
-        return text.strip()
+    return {
+        "text": text,
+        "language": detected_language
+    }
 
 def test_stream():
     samplerate = 16000

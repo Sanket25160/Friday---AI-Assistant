@@ -1,49 +1,103 @@
-import sounddevice as sd
-import torch
-import numpy as np
-from silero_vad import load_silero_vad, VADIterator
-import edge_tts
-import pygame
 import asyncio
 import os
-from speech.interrupt import interrupt_event
+import threading
+import time
+import edge_tts
+import numpy as np
+import pygame
+import sounddevice as sd
+import torch
 
-pygame.mixer.init()
+VOICES = {
+    "en": "en-US-JennyNeural",
+    "hi": "hi-IN-SwaraNeural"
+}
+
+from silero_vad import load_silero_vad, VADIterator
+from speech.interrupt import interrupt_event
+from speech.language import detect_language
+
+pygame.mixer.init(
+    frequency=44100,
+    size=-16,
+    channels=2,
+    buffer=512
+)
 
 vad_model = load_silero_vad()
-vad = VADIterator(vad_model)
 
-def user_started_speaking():
 
+def stop_speaking():
+    """Immediately stops Friday from speaking."""
+    interrupt_event.set()
+    try:
+        if pygame.mixer.get_init():
+            pygame.mixer.music.stop()
+    except Exception:
+        pass
+
+
+def _speech_interrupt_monitor(stop_signal):
+    """
+    Listens to the microphone while audio is playing.
+    If the user starts speaking, it stops speech playback immediately.
+    """
     samplerate = 16000
     blocksize = 512
+    consecutive_speech = 0
+    grace_period = 0.35  # seconds after playback starts
+    start_time = time.time()
 
-    with sd.InputStream(
-        samplerate=samplerate,
-        channels=1,
-        dtype="float32",
-        blocksize=blocksize,
-    ) as stream:
+    try:
+        with sd.InputStream(
+            samplerate=samplerate,
+            channels=1,
+            dtype="float32",
+            blocksize=blocksize,
+        ) as stream:
+            while not stop_signal.is_set():
+                audio, overflowed = stream.read(blocksize)
 
-        audio, overflowed = stream.read(blocksize)
+                # Skip during initial grace period
+                if time.time() - start_time < grace_period:
+                    continue
 
-        audio_tensor = torch.from_numpy(audio.flatten())
+                amplitude = np.max(np.abs(audio))
+                if amplitude < 0.035:
+                    consecutive_speech = 0
+                    continue
 
-        event = vad(audio_tensor)
+                audio_tensor = torch.from_numpy(audio.flatten())
+                prob = vad_model(audio_tensor, samplerate).item()
 
-        if event is not None:
-            print(event)
+                if prob > 0.65:
+                    consecutive_speech += 1
+                    # Require 2 consecutive frames (~64ms) of detected speech
+                    if consecutive_speech >= 2:
+                        print("\n[Interrupt: User started speaking!]")
+                        stop_speaking()
+                        break
+                else:
+                    consecutive_speech = 0
+    except Exception:
+        pass
 
-        return event is not None and "start" in event
 
-async def speak(text):
+async def speak(text, language="auto"):
+    print("Inside speak()")
     interrupt_event.clear()
     filename = "voice.mp3"
+    if language == "auto":
+        language = detect_language(text)
+    voice = VOICES.get(language, VOICES["en"])
+
+    print("Language:", language)
+    print("Voice:", voice)
 
     communicate = edge_tts.Communicate(
         text=text,
-        voice="en-US-GuyNeural",
-        rate="+5%",
+        voice=voice,
+        rate="+10%",
         pitch="-2Hz"
     )
     start = time.time()
@@ -56,25 +110,54 @@ async def speak(text):
     print("Speaking...")
 
     pygame.mixer.music.load(filename)
+    print("Loaded:", filename)
+    print("Volume:", pygame.mixer.music.get_volume())
     pygame.mixer.music.play()
+    print("Play command sent")
+    print("Busy immediately:", pygame.mixer.music.get_busy())
 
-    while pygame.mixer.music.get_busy():
+    # Start background interrupt monitor while speaking
+    stop_signal = threading.Event()
+    monitor_thread = threading.Thread(
+        target=_speech_interrupt_monitor,
+        args=(stop_signal,),
+        daemon=True
+    )
+    monitor_thread.start()
 
-       if interrupt_event.is_set():
+    while True:
+        if not pygame.mixer.music.get_busy():
+            print("Playback finished")
+            break
 
-           print("Interrupted!")
+        if interrupt_event.is_set():
+            print("Interrupted!")
+            pygame.mixer.music.stop()
+            break
 
-           pygame.mixer.music.stop()
+        await asyncio.sleep(0.05)
 
-           interrupt_event.clear()
-
-           break
-
-       await asyncio.sleep(0.05)
+    stop_signal.set()
+    if monitor_thread.is_alive():
+        monitor_thread.join(timeout=0.2)
 
     pygame.mixer.music.unload()
 
-    os.remove(filename)
+    if os.path.exists(filename):
+        try:
+            os.remove(filename)
+        except Exception:
+            pass
 
 import time
 start = time.time()
+
+def speak_sync(text, language="auto"):
+    print("Inside speak_sync")
+
+    def runner():
+        asyncio.run(speak(text, language))
+
+    thread = threading.Thread(target=runner)
+    thread.start()
+    thread.join()

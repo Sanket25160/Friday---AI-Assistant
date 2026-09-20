@@ -1,38 +1,41 @@
-import json
-import os
+"""Recent conversation context that survives program restarts."""
 
-MEMORY_FILE = "memory/conversation.json"
-
-# Load memory from file
-if os.path.exists(MEMORY_FILE):
-    with open(MEMORY_FILE, "r") as f:
-        conversation = json.load(f)
-else:
-    conversation = []
+from AI.memory_store import MEMORY_DIR, memory_lock, read_json, write_json
 
 
-def save():
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(conversation, f, indent=4)
-
-
-def add(role, content):
-    conversation.append({
-        "role": role,
-        "content": content
-    })
-
-    # Keep only the last 20 messages
-    if len(conversation) > 20:
-        conversation.pop(0)
-
-    save()
+MEMORY_FILE = MEMORY_DIR / "conversation.json"
+MAX_MESSAGES = 20
 
 
 def get():
-    return conversation
+    with memory_lock:
+        messages = read_json(MEMORY_FILE, list)
+    return [
+        item for item in messages
+        if isinstance(item, dict)
+        and item.get("role") in {"user", "assistant"}
+        and isinstance(item.get("content"), str)
+    ][-MAX_MESSAGES:]
+
+
+def add(role, content):
+    if role not in {"user", "assistant"} or not isinstance(content, str):
+        raise ValueError("Invalid conversation message")
+    with memory_lock:
+        messages = get() + [{"role": role, "content": content}]
+        write_json(MEMORY_FILE, messages[-MAX_MESSAGES:])
+
+
+def add_turn(user_message, assistant_response):
+    # Save the complete exchange together, before acknowledging it to the user.
+    with memory_lock:
+        messages = get() + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": assistant_response},
+        ]
+        write_json(MEMORY_FILE, messages[-MAX_MESSAGES:])
 
 
 def clear():
-    conversation.clear()
-    save()
+    with memory_lock:
+        write_json(MEMORY_FILE, [])

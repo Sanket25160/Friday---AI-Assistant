@@ -1,5 +1,12 @@
 import webbrowser
 import urllib.parse
+import sys
+
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+import time
 
 WEBSITES = {
     "google": "https://google.com",
@@ -18,7 +25,11 @@ def search_youtube(query):
     webbrowser.open(url)
 
 def open_website(name):
-    webbrowser.open(f"https://{name}.com")
+
+    if not name.startswith(("http://", "https://")):
+        name = "https://" + name
+
+    webbrowser.open(name)
 
 def search_google(query):
     url = "https://www.google.com/search?q=" + urllib.parse.quote(query)

@@ -1,3 +1,6 @@
+import os
+import re
+import shutil
 import subprocess
 
 APPS = {
@@ -11,10 +14,24 @@ APPS = {
 }
 
 def open_application(app_name):
-    app_name = app_name.lower()
-
-    if app_name not in APPS:
+    if not isinstance(app_name, str) or not app_name.strip():
         return False
 
-    subprocess.Popen(APPS[app_name])
-    return True
+    requested = app_name.strip()
+    app_name = requested.lower()
+
+    executable = APPS.get(app_name)
+    if executable is None:
+        executable = requested if os.path.isfile(requested) else shutil.which(requested)
+
+    if executable is not None:
+        subprocess.Popen([executable])
+        return True
+
+    # Windows' Start command can resolve registered GUI applications that are
+    # not on PATH. Reject shell metacharacters before passing the user input on.
+    if os.name == "nt" and not re.search(r"[&|<>^\"\n\r]", requested):
+        subprocess.Popen(["cmd.exe", "/c", "start", "", requested])
+        return True
+
+    return False

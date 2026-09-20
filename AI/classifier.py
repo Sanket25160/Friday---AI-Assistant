@@ -1,3 +1,6 @@
+from AI.memory_commands import get_memory_plan
+
+
 COMMAND_KEYWORDS = [
     "open",
     "play",
@@ -21,6 +24,9 @@ COMMAND_KEYWORDS = [
 ]
 
 def classify(command):
+
+    if get_memory_plan(command) is not None:
+        return "command"
 
     text = command.lower()
 

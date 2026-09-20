@@ -1,3 +1,1 @@
-from threading import Event
-
-interrupt_event = Event()
+from speech.interrupt import interrupt_event
